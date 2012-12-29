@@ -1,0 +1,76 @@
+#!/bin/sh
+
+HEIGHT=18
+WIDTH=100
+X=924 #1149 #893
+Y=0
+FONT='Tamsyn:size=14'
+TIME_INT=60
+BG='#111111'
+FG='#B3B3B3'
+
+# battery monitor -------------------------------------------#
+GW=25
+GH=8
+GFG='#eeeeee'
+GBG='#333333'
+COL='#B3B3B3'
+LOWCOL='#ff4747'
+CHARGECOL='#94BA4A'
+
+LOWBAT=10
+
+BATT_ICON='^i(/home/zoole/.local/share/icons/xbm_icons/bat_low_01.xbm)'
+AC_ICON='^i(/home/zoole/.local/share/icons/xbm_icons/power-ac.xbm)'
+
+# clock -----------------------------------------------------#
+HOUR_COL='#AE4826'
+MINUTE_COL='#8DADCE'
+
+# -----------------------------------------------------------#
+
+# TODO make special case for AC
+batt_status() {
+	notify-send 'Battery Status' "`cat /sys/class/power_supply/BAT0/status` (`acpi -b|cut -d ' ' -f 5|head -c 5` remaining)"
+}
+
+while true; do
+
+    PRESENT='/sys/class/power_supply/BAT0/'
+    #AC_STATE=`cat /sys/class/power_supply/online`
+    
+    if [ -d "$PRESENT" ]; then
+    	# look up battery's data
+    	BAT_FULL=`cat /sys/class/power_supply/BAT0/energy_full_design`;
+    	STATUS=`cat /sys/class/power_supply/BAT0/status`;
+    	RCAP=`cat /sys/class/power_supply/BAT0/energy_now`;
+    	TIME_LEFT=`acpi -b|cut -d " " -f 5|head -c 5`;
+    
+    	# calculate remaining power
+    	RPERCT=`expr $RCAP \* 100`;
+    	RPERC=`expr $RPERCT / $BAT_FULL`;
+    
+    	if [ $RPERC -le $LOWBAT ]; then
+    		GFG=$LOWCOL;
+    	elif [ "$STATUS" = "Charging" ]; then
+    		GFG=$CHARGECOL;
+    	else GFG=$COL; fi
+    
+        BATTERYOUTPUT="`expr $RPERC + 20 | gdbar -ss 1 -sw 4 -h $GH -w $GW -fg $GFG -bg $GBG`"
+    else
+    	STATUS="On AC"
+    	TIME_LEFT="N/A"
+    	BATTERYOUTPUT=" $AC_ICON"
+    fi
+
+    #BATTERYCMD='notify-send -i battery "$STATUS [$RPERC%]" "$TIME_LEFT remaining"'
+    BATTERYCMD="goomwwm -cli -notice \"Battery status: $STATUS [$RPERC%]\" \"$TIME_LEFT remaining\""
+    #DATEOUTPUT="`date +'%a %B %d, %Y'`"
+    TIMEOUTPUT="^fg($HOUR_COL)$(date +'%H')^fg():^fg($MINUTE_COL)$(date +'%M')^fn()"
+# ^fg()^fn(Inconsolata:5)^p(;+2)$(date +'%p')^fn()"
+
+echo "^ca(1,$BATTERYCMD)^pa(0)$BATTERYOUTPUT^ca()^p(15)^ca(1, gsimplecal)$TIMEOUTPUT^ca()"
+#echo "$DATEOUTPUT"
+    sleep $TIME_INT;
+    done | dzen2 -p -u -fg $FG -bg $BG -fn $FONT -x $X -y $Y -tw $WIDTH -w 200 -sa c -h $HEIGHT \
+                -title-name "dzen-dock"
