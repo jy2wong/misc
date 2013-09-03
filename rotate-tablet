@@ -1,0 +1,331 @@
+#!/usr/bin/python2
+# Screen rotation script for X60 tablet (http://luke.no-ip.org/x60tablet)
+# HDAPS monitoring added by by Daniel Mendler <dmendler at wurzelteiler . de>
+
+import os, sys, re, signal, time, errno, subprocess
+
+  # All allowed rotations 'right',
+rotations = ['normal', 'inverted', 'left']
+
+  # Rotations to pick from when no specific rotation is given on the command line
+  # Also controls the order in which rotations are chosen.
+preferredRotations = rotations
+
+  # Rotation to use when switched to tablet mode. If this is set to 'monitor', the
+  # script will check the hdaps orientation and automatically rotate the screen.
+tabletMode = "inverted"
+
+  # Use this instead of tabletMode if HDAPS is not installed
+noHDAPSTabletMode = "left"
+  
+  # Rotation to use when switched to normal laptop mode
+laptopMode = "normal"
+  
+  
+  # Keycodes to use for each rotation
+  # 104 = pgup, 109 = pgdn, 105 = left, 106 = right, 103 = up, 108 = down
+keyCodes = {
+            'normal':   {'up': 103, 'dn': 108, 'lt': 105, 'rt': 106},
+           # 'right':    {'up': 105, 'dn': 106, 'lt': 108, 'rt': 103},
+            'inverted': {'up': 108, 'dn': 103, 'lt': 106, 'rt': 105},
+            'left':     {'up': 106, 'dn': 105, 'lt': 103, 'rt': 108}
+          }
+
+  # Keyboard scan codes for arrow keys (you probably don't need to change these)
+scanCodes = {'up': 0x71, 'dn': 0x6f, 'lt': 0x6e, 'rt': 0x6d}
+
+  # Pid file for hdaps monitor daemon
+hdapsPidFile = '/tmp/hdaps-rotate.pid'
+
+  # HDAPS system files
+hdapsPosFile = '/sys/devices/platform/hdaps/position'
+  # HDAPS calibrate seems mostly useless, use manually stored calibration instead.
+hdapsCalibrateFile = '/sys/devices/platform/hdaps/calibrate'
+#hdapsCalibrateFile = '/etc/hdaps.calibration'
+
+
+## If a local xsetwacom is installed, it should probably take precedent (?)
+if os.path.isfile('/usr/local/bin/xsetwacom'):
+  xsetwacom = '/usr/local/bin/xsetwacom'
+elif os.path.isfile('/usr/bin/xsetwacom'):
+  xsetwacom = '/usr/bin/xsetwacom'
+else:
+  ## If it's not one of those two, just hope it's in the path somewhere.
+  xsetwacom = 'xsetwacom'
+
+xrandr = '/usr/bin/xrandr'
+
+
+
+def main():
+  setEnv()
+  
+  if len(sys.argv) < 2:     # No rotation specified, just go to the next one in the preferred list
+    cr = getCurrentRotation()
+    if cr in preferredRotations:
+      nextIndex = (preferredRotations.index(cr) + 1) % len(preferredRotations)
+    else:
+      nextIndex = 0
+    next = preferredRotations[nextIndex]
+  else:
+    next = sys.argv[1]
+    if not next in rotations:
+      if next == "tablet":
+        next = tabletMode
+        if tabletMode == 'monitor' and not hasHDAPS():
+          sys.stderr.write("warning: HDAPS does not appear to be installed, skipping monitor mode\n")
+          next = noHDAPSTabletMode
+      elif next == "laptop":
+        next = laptopMode
+      elif next == 'monitor':
+        pass
+      else:
+        sys.stderr.write("Rotation \"%s\" not allowed (pick from %s, tablet, laptop, or monitor)\n" % (next, ', '.join(rotations)))
+        sys.stderr.write("""
+  monitor -- means the script should run in the background and rotate the screen based on the
+             tablet's orientation (requires HDAPS).
+  tablet  -- uses watever orientation is specified in the tabletMode variable in the script
+  laptop  -- uses whatever orientation is specified in the laptopMode variable in the script
+             (tabletMode and laptopMode may be edited to suit your preferences)
+""")
+        sys.exit(-1)
+  
+  if next == 'monitor':
+    if not hasHDAPS():
+      sys.stderr.write("ERROR: HDAPS does not appear to be installed, can not start orientation monitor.\n")
+      sys.exit(-1)
+    startHDAPSDaemon()
+  else:
+    stopHDAPSDaemon()
+    print "Setting rotation to %s" % next
+    setRotation(next)
+    cr = getCurrentRotation()
+    if cr != next:
+      sys.stderr.write("Failed to change rotation! (is xrandr broken?)\n")
+
+
+def hasHDAPS():
+  return os.path.exists(hdapsPosFile) and os.path.exists(hdapsCalibrateFile)
+
+  ## Read and parse HDAPS position
+def readHDAPSPos(file):
+  try:
+    f = open(file)
+  except:
+    raise Exception("Could not read HDAPS file %s! This is required for automatic orientation-based rotation." % file)
+  l = f.read()
+  f.close()
+  return [int(x) for x in l[1:-2].split(',')]
+  
+
+
+  ## Signal handler
+def quitHDAPS(a, b):
+  os.unlink(hdapsPidFile)
+  os._exit(0)
+
+
+  ## HDAPS monitoring loop
+def monitorHDAPS():
+  signal.signal(signal.SIGTERM, quitHDAPS)
+  centerX, centerY = readHDAPSPos(hdapsCalibrateFile)
+  x = centerX
+  y = centerY
+  rot = getCurrentRotation()
+  while True:
+    time.sleep(0.1)
+    nx, ny = readHDAPSPos(hdapsPosFile)
+    hRate = 0.1  ## Hysteresis
+    x = x * (1. - hRate) + nx * hRate
+    y = y * (1. - hRate) + ny * hRate
+    dx = x - centerX
+    dy = y - centerY
+    newrot = rot
+    if abs(dx) - abs(dy) > 30:
+      if dx > 30:
+        newrot = 'right'
+      elif dx < -30: 
+        newrot = 'left'
+    elif abs(dy) - abs(dx) > 30:
+      if dy > 30: 
+        newrot = 'inverted'
+      elif dy < -30: 
+        newrot = 'normal'
+    print "%d, %d %s" % (dx, dy, newrot)
+    if rot != newrot:
+      setRotation(newrot)
+      rot = newrot
+
+
+  ## Start daemon by double forking
+def startHDAPSDaemon():
+  stopHDAPSDaemon()
+  try:
+    if os.fork() > 0: os._exit(0)
+  except OSError, error:
+    sys.stderr.write("fork #1 failed: %d (%s)\n" % (error.errno, error.strerror))
+    os._exit(1)
+  os.chdir('/')
+  os.setsid()
+  os.umask(0)
+  try:
+    pid = os.fork()
+    if pid > 0:
+      return
+  except OSError, error:
+    sys.stderr.write("fork #2 failed: %d (%s)\n" % (error.errno, error.strerror))
+    os._exit(1)
+  setUID()
+  f = open(hdapsPidFile, 'w')
+  f.write('%d' % os.getpid())
+  f.close()
+  #os.chmod(hdapsPidFile, 0777)
+  sys.stderr.write('HDAPS monitor started\n')
+  monitorHDAPS()
+
+
+  ## Check for pid file and stop daemon
+def stopHDAPSDaemon():
+ try:
+   if os.path.exists(hdapsPidFile):
+     f = open(hdapsPidFile)
+     pid = f.read()
+     f.close()
+     os.kill(int(pid), signal.SIGTERM)
+     sys.stderr.write('HDAPS monitor terminated\n')
+ except OSError, error:
+   if error.errno == errno.ESRCH:
+     sys.stderr.write("Removing stale pid file\n")
+     os.unlink(hdapsPidFile)
+   else:
+     sys.stderr.write('Failed to kill already running daemon!\n')
+     print error
+     sys.exit(1)
+
+
+def runCmd(cmd):
+  c = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+  rval = c.wait()
+  stdout = c.stdout.read()
+  stderr = c.stderr.read()
+  if rval != 0:
+    sys.stderr.write("WARNING--Command failed (returned %d):\n  %s\n" % (rval, cmd))
+    sys.stderr.write(stdout)
+    sys.stderr.write(stderr)
+  return (rval, stdout.split('\n'), stderr.split('\n'))
+
+def getCurrentRotation():
+  try:
+    rrv = randrVersion()
+    if rrv < '1.2':
+      l = [s for s in runCmd(xrandr)[1] if re.match('Current rotation', s)]
+      r = re.sub('Current rotation - ', '', l[0])
+      return r.strip()
+    elif rrv >= '1.2':
+      l = runCmd(xrandr)[1] #"%s | grep 'LVDS connected' | gawk '{print $4}' | sed -e 's/(//'" % xrandr)
+      l = [x for x in l if re.search(r'(LVDS1|default) connected', x)][0]
+      l = l.split(' ')[3]
+      l = re.sub(r'\(', '', l)
+      cr = l.strip()
+      print "Current rotation: %s" % cr
+      return cr
+  except:
+    sys.stderr.write("Can not determine current rotation, bailing out :(\n")
+    raise
+
+
+  ## Calls xrandr and xsetwacom, sets new keymap.
+def setRotation(o):
+  if o == None:
+    return
+  if runCmd("%s --output LVDS1 --rotate %s" % (xrandr, o))[0] != 0:
+    raise Exception("xrandr rotate command failed, bailing out.")
+  wacomRots = {'normal': 'none', 'left': 'ccw', 'right': 'cw', 'inverted': 'half'}
+  #wacomRots = {'normal': 'NONE', 'left': 'CCW', 'right': 'CW', 'inverted': 'HALF'}
+  tabletDevs = listDevices()
+  if len(tabletDevs) < 1:
+    sys.stderr.write('Did not find any tablet devices, only rotating screen.\n')
+  for d in tabletDevs:
+    if runCmd("%s set '%s' Rotate %s" % (xsetwacom, d, wacomRots[o]))[0] != 0:
+      raise Exception("xsetwacom rotate command failed, bailing out")
+  setKeymap(o)
+
+
+  ## set process UID to the same as the user logged in on :0
+def setUID():
+  username = getUsername()
+  if username == None:
+    return
+  uid = int(passwdRecord(username)[2])
+  if os.getuid() != uid:
+    try:
+      os.setuid(uid)
+    except:
+      sys.stderr.write('Could not set process UID :(\n')
+
+  ## Return the /etc/passwd record for user
+def passwdRecord(user):
+  fd = open('/etc/passwd', 'r')
+  lines = fd.readlines()
+  fd.close()
+  match = filter(lambda s: re.match('%s:' % user, s), lines)
+  return match[0].split(':')
+
+
+  ## Get username logged in on :0
+def getUsername():
+  who = runCmd('/usr/bin/who')[1]
+  
+  ## Search for any line that looks like it mentions display :0
+  l = filter(lambda s: re.search(r'\S+.+\:0(\.0)?\D*', s), who)
+  if len(l) > 1:
+    ## try to pick out the user logged in on the tty (there should be only one on :0)
+    l2 = filter(lambda s: re.search(r'\btty\d+\b', s), l)
+    if len(l2) < 1:
+      sys.stderr.write("WARNING: Guessing X session user is [%s]\n" % l[0])
+    else:
+      l = l2
+  if len(l) < 1:
+    sys.stderr.write("Can not determine current X session username\n")
+    return None
+  
+  ustr = (l[0].strip().split(' '))[0]
+  return ustr
+
+
+  ## Set up the X environmental variables needed for xrandr and xsetwacom
+def setEnv():
+  if os.environ.has_key('DISPLAY'):
+    return  # DISPLAY is already set, don't mess with it.
+  
+  username = getUsername()
+  if username == None:
+    return
+  print "Rotating screen for user %s" % username
+  home = passwdRecord(username)[5]
+  xauth = '%s/.Xauthority' % home
+  os.environ['DISPLAY'] = ':0.0'
+  os.environ['XAUTHORITY'] = xauth
+
+  
+def setKeymap(o):
+  return None
+#  for sc in scanCodes.keys():
+#    os.system('sudo setkeycodes %x %d' % (scanCodes[sc], keyCodes[o][sc]))
+
+
+def randrVersion():
+  xrv = runCmd('%s -v' % xrandr)[1][0]
+  xrv = re.sub(r'.*version ', '', xrv).strip()
+  if len(xrv) < 1:
+    raise Exception('Could not determine xrandr version!')
+  return xrv
+
+def listDevices():
+  dev = runCmd("%s list dev" % xsetwacom)[1]
+  dev = [re.sub(r'\t.*', '', s).strip() for s in dev]
+  dev.remove('')
+  return dev
+   
+main()
+

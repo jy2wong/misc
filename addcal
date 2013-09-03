@@ -1,0 +1,9 @@
+#!/bin/bash
+
+# addcal 06 06 CO 454 "A2 due" "1pm"
+if [ $# -ne 6 ]; then
+	echo "Usage: addcal 06 06 CO 454 'A2 due' '1pm'"
+else
+	mkdir -p ~/.calendar/2013/"$1"
+	printf "%-10s|%-11s|%s\n" "$3 $4" "$5" "$6" >> ~/.calendar/2013/"$1"/$2
+fi

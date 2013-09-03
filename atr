@@ -1,0 +1,10 @@
+#!/bin/bash
+
+MESSAGE="${2}"
+ATARGS="${1}"
+CMD="echo \"\`date +%R\` $MESSAGE\" | dzen2 -p -fg '#B3B3B3' -bg '#111111' -fn '-*-helvetica-bold-r-*-*-34-*-*-*-*-*-*-*' -w 1024 -y 340"
+
+at $ATARGS <<EOF
+export DISPLAY=:0.0
+eval "$CMD"
+EOF
