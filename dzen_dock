@@ -2,7 +2,11 @@
 
 HEIGHT=18
 WIDTH=100
-X=924 #1149 #893
+if ( xrandr|grep 'VGA1 connected' &> /dev/null ) ; then
+    X=1818
+else
+    X=924 #1149 #893
+fi
 Y=0
 FONT='Tamsyn:size=14'
 TIME_INT=60
@@ -29,13 +33,11 @@ MINUTE_COL='#8DADCE'
 
 # -----------------------------------------------------------#
 
-# TODO make special case for AC
-batt_status() {
-	notify-send 'Battery Status' "`cat /sys/class/power_supply/BAT0/status` (`acpi -b|cut -d ' ' -f 5|head -c 5` remaining)"
-}
+BATTERYOUTPUT=''
+BATTERYCMD=''
+TIMEOUTPUT=''
 
-while true; do
-
+function battery_update() {
     PRESENT='/sys/class/power_supply/BAT0/'
     #AC_STATE=`cat /sys/class/power_supply/online`
     
@@ -56,20 +58,36 @@ while true; do
     		GFG=$CHARGECOL;
     	else GFG=$COL; fi
     
-        BATTERYOUTPUT="`expr $RPERC + 20 | gdbar -ss 1 -sw 4 -h $GH -w $GW -fg $GFG -bg $GBG`"
+    BATTERYOUTPUT="`expr $RPERC + 20 | gdbar -ss 1 -sw 4 -h $GH -w $GW -fg $GFG -bg $GBG`"
     else
     	STATUS="On AC"
     	TIME_LEFT="N/A"
     	BATTERYOUTPUT=" $AC_ICON"
     fi
 
-    #BATTERYCMD='notify-send -i battery "$STATUS [$RPERC%]" "$TIME_LEFT remaining"'
-    BATTERYCMD="goomwwm -cli -notice \"Battery status: $STATUS [$RPERC%]\" \"$TIME_LEFT remaining\""
-    #DATEOUTPUT="`date +'%a %B %d, %Y'`"
-    TIMEOUTPUT="^fg($HOUR_COL)$(date +'%H')^fg():^fg($MINUTE_COL)$(date +'%M')^fn()"
-# ^fg()^fn(Inconsolata:5)^p(;+2)$(date +'%p')^fn()"
+    BATTERYCMD="goomwwm -cli -notice \"Battery status: $STATUS [$RPERC%] $TIME_LEFT remaining\""
+}
 
-echo "^ca(1,$BATTERYCMD)^pa(0)$BATTERYOUTPUT^ca()^p(15)^ca(1, gsimplecal)$TIMEOUTPUT^ca()"
+time_update() {
+    TIMEOUTPUT="^fg($HOUR_COL)$(date +'%H')^fg():^fg($MINUTE_COL)$(date +'%M')^fn()"
+}
+
+# offset, output, command
+output_module_abs() {
+    echo -n "^pa($1)^ca(1,$3)$2^ca()"
+}
+
+output_module_rel() {
+    echo -n "^p($1)^ca(1,$3)$2^ca()"
+}
+
+while true; do
+    battery_update
+    time_update
+    output_module_rel 0 "$BATTERYOUTPUT" "$BATTERYCMD" 
+    output_module_rel 15 "$TIMEOUTPUT" 'gsimplecal' 
+    echo
+
 #echo "$DATEOUTPUT"
     sleep $TIME_INT;
     done | dzen2 -p -u -fg $FG -bg $BG -fn $FONT -x $X -y $Y -tw $WIDTH -w 200 -sa c -h $HEIGHT \
